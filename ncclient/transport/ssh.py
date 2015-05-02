@@ -33,6 +33,7 @@ logging.getLogger("paramiko").setLevel(logging.DEBUG)
 
 BUF_SIZE = 4096
 MSG_DELIM = "]]>]]>"
+MSG_DELIM_1_1 = '\n##\n'
 TICK = 0.1
 
 def default_unknown_host_cb(host, fingerprint):
@@ -331,21 +332,53 @@ class SSHSession(Session):
                 # select on a paramiko ssh channel object does not ever return it in the writable list, so channels don't exactly emulate the socket api
                 r, w, e = select([chan], [], [], TICK)
                 # will wakeup evey TICK seconds to check if something to send, more if something to read (due to select returning chan in readable list)
-                if r:
-                    data = chan.recv(BUF_SIZE)
-                    if data:
-                        self._buffer.write(data)
-                        self._parse()
-                    else:
-                        raise SessionCloseError(self._buffer.getvalue())
-                if not q.empty() and chan.send_ready():
-                    logger.debug("Sending message")
-                    data = q.get() + MSG_DELIM
-                    while data:
-                        n = chan.send(data)
+                if self._base == '1.1':
+                    print "jerome"
+                    print r
+                    if r:
+                        data = chan.recv(BUF_SIZE)
+                        if data:
+                            print "data to read"
+                            print data
+                            self._buffer.write(data)
+                            self._parse()
+                        else:
+                            raise SessionCloseError(self._buffer.getvalue())
+                    if not q.empty() and chan.send_ready():
+                        logger.debug("Sending message")
+                        data = q.get()
+                        print "data"
+                        print data
+                        print '\n#%d\n' % len(data) + data
+                        n = chan.send('\n#%d\n' % len(data) + data + MSG_DELIM_1_1)
+                        print "n = "
+                        print n
                         if n <= 0:
                             raise SessionCloseError(self._buffer.getvalue(), data)
-                        data = data[n:]
+
+                        # while data:
+                        #     n = chan.send(data)
+                        #     if n <= 0:
+                        #         raise SessionCloseError(self._buffer.getvalue(), data)
+                        #     data = data[n:]
+                    print w
+                    print e
+                else:
+                    if r:
+                        data = chan.recv(BUF_SIZE)
+                        if data:
+                            self._buffer.write(data)
+                            self._parse()
+                        else:
+                            raise SessionCloseError(self._buffer.getvalue())
+                    if not q.empty() and chan.send_ready():
+                        logger.debug("Sending message")
+                        data = q.get() + MSG_DELIM
+                        while data:
+                            n = chan.send(data)
+                            if n <= 0:
+                                raise SessionCloseError(self._buffer.getvalue(), data)
+                            data = data[n:]
         except Exception as e:
             logger.debug("Broke out of main loop, error=%r", e)
             self._dispatch_error(e)
