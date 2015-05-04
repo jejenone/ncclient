@@ -84,12 +84,13 @@ class SSHSession(Session):
     def _parse11(self):
         delim = MSG_DELIM_1_1
         buf = self._buffer
+        logger.debug("1 seeking at position: %d" % self._parsing_pos)
         buf.seek(self._parsing_pos)
-        logger.debug("1 start_pos: %d" % self._parsing_pos)
         while True:
             line = buf.readline()
             if not line: # done reading buffer
                 logger.debug("couldnt read line")
+                self._parsing_pos = self._buffer.tell()
                 break
             elif line == MSG_DELIM_1_1[1:]: #end of transmission
                 logger.debug("end of chunk")
@@ -99,10 +100,12 @@ class SSHSession(Session):
                 try:
                     sz = int(line[1:])
                 except: # could be end of buffer, just break
+                    self._parsing_pos = self._buffer.tell() - 1
                     break
                 message = buf.read(sz)
-                if len(message) < sz: # not enough buffer, break
+                if len(message) < sz: # not enough buffer, rewind then break
                     logger.debug("can't read %d bytes of chunk" % sz)
+                    logger.debug("buffer size is %d" % len(buf.getvalue()))
                     break
                 else:
                     logger.debug("parsed new chunk of %d bytes" % sz)
@@ -114,7 +117,6 @@ class SSHSession(Session):
                 raise Exception
         # break - end of buffer
         logger.debug("done reading buffer")
-        self._parsing_pos = self._buffer.tell()
 
     def _parse10(self):
         "Messages are delimited by MSG_DELIM. The buffer could have grown by a maximum of BUF_SIZE bytes everytime this method is called. Retains state across method calls and if a byte has been read it will not be considered again."
