@@ -69,13 +69,55 @@ class SSHSession(Session):
         self._channel_id = None
         self._channel_name = None
         self._buffer = StringIO() # for incoming data
+        self._message = StringIO()
         # parsing-related, see _parse()
         self._parsing_state = 0
         self._parsing_pos = 0
         self._device_handler = device_handler
 
     def _parse(self):
-        "Messages ae delimited by MSG_DELIM. The buffer could have grown by a maximum of BUF_SIZE bytes everytime this method is called. Retains state across method calls and if a byte has been read it will not be considered again."
+        if self._base == '1.0':
+            self._parse10()
+        elif self._base == '1.1':
+            self._parse11()
+
+    def _parse11(self):
+        delim = MSG_DELIM_1_1
+        buf = self._buffer
+        buf.seek(self._parsing_pos)
+        logger.debug("1 start_pos: %d" % self._parsing_pos)
+        while True:
+            line = buf.readline()
+            if not line: # done reading buffer
+                logger.debug("couldnt read line")
+                break
+            elif line == MSG_DELIM_1_1[1:]: #end of transmission
+                logger.debug("end of chunk")
+                self._dispatch_message(self._message.getvalue())
+                self._message = StringIO()
+            elif line[0] == '#':  # chunk delimiter
+                try:
+                    sz = int(line[1:])
+                except: # could be end of buffer, just break
+                    break
+                message = buf.read(sz)
+                if len(message) < sz: # not enough buffer, break
+                    logger.debug("can't read %d bytes of chunk" % sz)
+                    break
+                else:
+                    logger.debug("parsed new chunk of %d bytes" % sz)
+                    self._parsing_pos = self._buffer.tell()
+                    self._message.write(message)
+            elif line == '\n':
+                continue
+            else:   #parsing error
+                raise Exception
+        # break - end of buffer
+        logger.debug("done reading buffer")
+        self._parsing_pos = self._buffer.tell()
+
+    def _parse10(self):
+        "Messages are delimited by MSG_DELIM. The buffer could have grown by a maximum of BUF_SIZE bytes everytime this method is called. Retains state across method calls and if a byte has been read it will not be considered again."
         delim = MSG_DELIM
         n = len(delim) - 1
         expect = self._parsing_state
@@ -332,47 +374,21 @@ class SSHSession(Session):
                 # select on a paramiko ssh channel object does not ever return it in the writable list, so channels don't exactly emulate the socket api
                 r, w, e = select([chan], [], [], TICK)
                 # will wakeup evey TICK seconds to check if something to send, more if something to read (due to select returning chan in readable list)
-                if self._base == '1.1':
-                    print "jerome"
-                    print r
-                    if r:
-                        data = chan.recv(BUF_SIZE)
-                        if data:
-                            print "data to read"
-                            print data
-                            self._buffer.write(data)
-                            self._parse()
-                        else:
-                            raise SessionCloseError(self._buffer.getvalue())
-                    if not q.empty() and chan.send_ready():
-                        logger.debug("Sending message")
+                if r:
+                    data = chan.recv(BUF_SIZE)
+                    if data:
+                        self._buffer.write(data)
+                        self._parse()
+                    else:
+                        raise SessionCloseError(self._buffer.getvalue())
+                if not q.empty() and chan.send_ready():
+                    logger.debug("Sending message")
+                    if self._base == '1.1':
                         data = q.get()
-                        print "data"
-                        print data
-                        print '\n#%d\n' % len(data) + data
                         n = chan.send('\n#%d\n' % len(data) + data + MSG_DELIM_1_1)
-                        print "n = "
-                        print n
                         if n <= 0:
                             raise SessionCloseError(self._buffer.getvalue(), data)
-
-                        # while data:
-                        #     n = chan.send(data)
-                        #     if n <= 0:
-                        #         raise SessionCloseError(self._buffer.getvalue(), data)
-                        #     data = data[n:]
-                    print w
-                    print e
-                else:
-                    if r:
-                        data = chan.recv(BUF_SIZE)
-                        if data:
-                            self._buffer.write(data)
-                            self._parse()
-                        else:
-                            raise SessionCloseError(self._buffer.getvalue())
-                    if not q.empty() and chan.send_ready():
-                        logger.debug("Sending message")
+                    else: # framing 1.0
                         data = q.get() + MSG_DELIM
                         while data:
                             n = chan.send(data)
