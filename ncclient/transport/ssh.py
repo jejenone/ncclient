@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import os
+import time
 import socket
 import getpass
 from binascii import hexlify
@@ -279,24 +280,50 @@ class SSHSession(Session):
         self._connected = True # there was no error authenticating
         # TODO: leopoul: Review, test, and if needed rewrite this part
         subsystem_names = self._device_handler.get_ssh_subsystem_names()
-        for subname in subsystem_names:
+        if subsystem_names:
+            for subname in subsystem_names:
+                c = self._channel = self._transport.open_session()
+                self._channel_id = c.get_id()
+                channel_name = "%s-subsystem-%s" % (subname, str(self._channel_id))
+                c.set_name(channel_name)
+                try:
+                    c.invoke_subsystem(subname)
+                except paramiko.SSHException as e:
+                    logger.info("%s (subsystem request rejected)", e)
+                    handle_exception = self._device_handler.handle_connection_exceptions(self)
+                    # Ignore the exception, since we continue to try the different
+                    # subsystem names until we find one that can connect.
+                    #have to handle exception for each vendor here
+                    if not handle_exception:
+                        continue
+                self._channel_name = c.get_name()
+                self._post_connect()
+                return
+        else:
+            # try spawning a 'netconf'
             c = self._channel = self._transport.open_session()
             self._channel_id = c.get_id()
-            channel_name = "%s-subsystem-%s" % (subname, str(self._channel_id))
-            c.set_name(channel_name)
+            logger.debug("sending 'netconf' command")
             try:
-                c.invoke_subsystem(subname)
+                NC_COMMAND = "netconf\n"
+                c.get_pty()
+                c.invoke_shell()
+                c.recv(BUF_SIZE) # empty buffer of local echo (banner and prompt)
+                c.send(NC_COMMAND)
             except paramiko.SSHException as e:
-                logger.info("%s (subsystem request rejected)", e)
+                logger.info("%s ('netconf' command rejected)", e)
                 handle_exception = self._device_handler.handle_connection_exceptions(self)
-                # Ignore the exception, since we continue to try the different
-                # subsystem names until we find one that can connect.
-                #have to handle exception for each vendor here
-                if not handle_exception:
-                    continue
+            time.sleep(1)
+            c.recv(len(NC_COMMAND)+1)
+            # stupid ASR prints date on first line
+            while c.recv_ready():
+                char = c.recv(1)
+                if char == '\n':
+                    break
             self._channel_name = c.get_name()
             self._post_connect()
             return
+
         raise SSHError("Could not open connection, possibly due to unacceptable"
                        " SSH subsystem name.")
 
@@ -391,7 +418,7 @@ class SSHSession(Session):
                         if n <= 0:
                             raise SessionCloseError(self._buffer.getvalue(), data)
                     else: # framing 1.0
-                        data = q.get() + MSG_DELIM
+                        data = q.get() + MSG_DELIM + '\n' # added '\n' for TTY mode
                         while data:
                             n = chan.send(data)
                             if n <= 0:
