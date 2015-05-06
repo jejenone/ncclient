@@ -300,7 +300,7 @@ class SSHSession(Session):
                 self._post_connect()
                 return
         else:
-            # try spawning a 'netconf'
+            # try spawning a 'netconf' from tty
             c = self._channel = self._transport.open_session()
             self._channel_id = c.get_id()
             logger.debug("sending 'netconf' command")
@@ -314,7 +314,7 @@ class SSHSession(Session):
                 logger.info("%s ('netconf' command rejected)", e)
                 handle_exception = self._device_handler.handle_connection_exceptions(self)
             time.sleep(1)
-            c.recv(len(NC_COMMAND)+1)
+            c.recv(len(NC_COMMAND)+1) # empty buffer again
             # stupid ASR prints date on first line
             while c.recv_ready():
                 char = c.recv(1)
