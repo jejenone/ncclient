@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import os
+import time
 import socket
 import getpass
 from binascii import hexlify
@@ -33,6 +34,7 @@ logging.getLogger("paramiko").setLevel(logging.DEBUG)
 
 BUF_SIZE = 4096
 MSG_DELIM = "]]>]]>"
+MSG_DELIM_1_1 = '\n##\n'
 TICK = 0.1
 
 def default_unknown_host_cb(host, fingerprint):
@@ -68,13 +70,57 @@ class SSHSession(Session):
         self._channel_id = None
         self._channel_name = None
         self._buffer = StringIO() # for incoming data
+        self._message = StringIO()
         # parsing-related, see _parse()
         self._parsing_state = 0
         self._parsing_pos = 0
         self._device_handler = device_handler
 
     def _parse(self):
-        "Messages ae delimited by MSG_DELIM. The buffer could have grown by a maximum of BUF_SIZE bytes everytime this method is called. Retains state across method calls and if a byte has been read it will not be considered again."
+        if self._base == '1.0':
+            self._parse10()
+        elif self._base == '1.1':
+            self._parse11()
+
+    def _parse11(self):
+        delim = MSG_DELIM_1_1
+        buf = self._buffer
+        logger.debug("1 seeking at position: %d" % self._parsing_pos)
+        buf.seek(self._parsing_pos)
+        while True:
+            line = buf.readline()
+            if not line: # done reading buffer
+                logger.debug("couldnt read line")
+                self._parsing_pos = self._buffer.tell()
+                break
+            elif line == MSG_DELIM_1_1[1:]: #end of transmission
+                logger.debug("end of chunk")
+                self._dispatch_message(self._message.getvalue())
+                self._message = StringIO()
+            elif line[0] == '#':  # chunk delimiter
+                try:
+                    sz = int(line[1:])
+                except: # could be end of buffer, just break
+                    self._parsing_pos = self._buffer.tell() - 1
+                    break
+                message = buf.read(sz)
+                if len(message) < sz: # not enough buffer, rewind then break
+                    logger.debug("can't read %d bytes of chunk" % sz)
+                    logger.debug("buffer size is %d" % len(buf.getvalue()))
+                    break
+                else:
+                    logger.debug("parsed new chunk of %d bytes" % sz)
+                    self._parsing_pos = self._buffer.tell()
+                    self._message.write(message)
+            elif line == '\n':
+                continue
+            else:   #parsing error
+                raise Exception
+        # break - end of buffer
+        logger.debug("done reading buffer")
+
+    def _parse10(self):
+        "Messages are delimited by MSG_DELIM. The buffer could have grown by a maximum of BUF_SIZE bytes everytime this method is called. Retains state across method calls and if a byte has been read it will not be considered again."
         delim = MSG_DELIM
         n = len(delim) - 1
         expect = self._parsing_state
@@ -234,24 +280,50 @@ class SSHSession(Session):
         self._connected = True # there was no error authenticating
         # TODO: leopoul: Review, test, and if needed rewrite this part
         subsystem_names = self._device_handler.get_ssh_subsystem_names()
-        for subname in subsystem_names:
+        if subsystem_names:
+            for subname in subsystem_names:
+                c = self._channel = self._transport.open_session()
+                self._channel_id = c.get_id()
+                channel_name = "%s-subsystem-%s" % (subname, str(self._channel_id))
+                c.set_name(channel_name)
+                try:
+                    c.invoke_subsystem(subname)
+                except paramiko.SSHException as e:
+                    logger.info("%s (subsystem request rejected)", e)
+                    handle_exception = self._device_handler.handle_connection_exceptions(self)
+                    # Ignore the exception, since we continue to try the different
+                    # subsystem names until we find one that can connect.
+                    #have to handle exception for each vendor here
+                    if not handle_exception:
+                        continue
+                self._channel_name = c.get_name()
+                self._post_connect()
+                return
+        else:
+            # try spawning a 'netconf' from tty
             c = self._channel = self._transport.open_session()
             self._channel_id = c.get_id()
-            channel_name = "%s-subsystem-%s" % (subname, str(self._channel_id))
-            c.set_name(channel_name)
+            logger.debug("sending 'netconf' command")
             try:
-                c.invoke_subsystem(subname)
+                NC_COMMAND = "netconf\n"
+                c.get_pty()
+                c.invoke_shell()
+                c.recv(BUF_SIZE) # empty buffer of local echo (banner and prompt)
+                c.send(NC_COMMAND)
             except paramiko.SSHException as e:
-                logger.info("%s (subsystem request rejected)", e)
+                logger.info("%s ('netconf' command rejected)", e)
                 handle_exception = self._device_handler.handle_connection_exceptions(self)
-                # Ignore the exception, since we continue to try the different
-                # subsystem names until we find one that can connect.
-                #have to handle exception for each vendor here
-                if not handle_exception:
-                    continue
+            time.sleep(1)
+            c.recv(len(NC_COMMAND)+1) # empty buffer again
+            # stupid ASR prints date on first line
+            while c.recv_ready():
+                char = c.recv(1)
+                if char == '\n':
+                    break
             self._channel_name = c.get_name()
             self._post_connect()
             return
+
         raise SSHError("Could not open connection, possibly due to unacceptable"
                        " SSH subsystem name.")
 
@@ -340,12 +412,18 @@ class SSHSession(Session):
                         raise SessionCloseError(self._buffer.getvalue())
                 if not q.empty() and chan.send_ready():
                     logger.debug("Sending message")
-                    data = q.get() + MSG_DELIM
-                    while data:
-                        n = chan.send(data)
+                    if self._base == '1.1':
+                        data = q.get()
+                        n = chan.send('\n#%d\n' % len(data) + data + MSG_DELIM_1_1)
                         if n <= 0:
                             raise SessionCloseError(self._buffer.getvalue(), data)
-                        data = data[n:]
+                    else: # framing 1.0
+                        data = q.get() + MSG_DELIM + '\n' # added '\n' for TTY mode
+                        while data:
+                            n = chan.send(data)
+                            if n <= 0:
+                                raise SessionCloseError(self._buffer.getvalue(), data)
+                            data = data[n:]
         except Exception as e:
             logger.debug("Broke out of main loop, error=%r", e)
             self._dispatch_error(e)

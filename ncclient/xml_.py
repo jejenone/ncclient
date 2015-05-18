@@ -34,8 +34,9 @@ class XMLError(NCClientError):
 
 ### Namespace-related
 
-#: Base NETCONF namespace
+#: Base NETCONF namespaces
 BASE_NS_1_0 = "urn:ietf:params:xml:ns:netconf:base:1.0"
+BASE_NS_1_1 = "urn:ietf:params:xml:ns:netconf:base:1.1"
 # NXOS_1_0
 NXOS_1_0 = "http://www.cisco.com/nxos:1.0"
 # NXOS_IF
@@ -59,6 +60,8 @@ H3C_CONFIG_1_0 = "http://www.h3c.com/netconf/config:1.0"
 #: Namespace for H3C data model
 H3C_ACTION_1_0 = "http://www.h3c.com/netconf/action:1.0"
 #
+IOSXR_IFMGR = "http://cisco.com/ns/yang/Cisco-IOS-XR-ifmgr-cfg"
+#
 try:
     register_namespace = etree.register_namespace
 except AttributeError:
@@ -76,6 +79,7 @@ for (ns, pre) in {
     CISCO_CPI_1_0: 'cpi',
     FLOWMON_1_0: 'fm',
     JUNIPER_1_1: 'junos',
+    IOSXR_IFMGR: 'iosxr',
 }.items():
     register_namespace(pre, ns)
 

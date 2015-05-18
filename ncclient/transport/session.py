@@ -44,6 +44,7 @@ class Session(Thread):
         self._server_capabilities = None # yet
         self._id = None # session-id
         self._connected = False # to be set/cleared by subclass implementation
+        self._base = '1.0'
         logger.debug('%r created: client_capabilities=%r' %
                      (self, self._client_capabilities))
         self._device_handler = None # Should be set by child class
@@ -99,6 +100,8 @@ class Session(Thread):
             raise error[0]
         #if ':base:1.0' not in self.server_capabilities:
         #    raise MissingCapabilityError(':base:1.0')
+        if ':base:1.1' in self.server_capabilities:
+            self._base = '1.1'
         logger.info('initialized: session-id=%s | server_capabilities=%s' %
                     (self._id, self._server_capabilities))
 
