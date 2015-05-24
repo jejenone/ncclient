@@ -413,12 +413,18 @@ class SSHSession(Session):
                 if not q.empty() and chan.send_ready():
                     logger.debug("Sending message")
                     if self._base == '1.1':
+                        logger.debug("Using Netconf 1.1 framing")
                         data = q.get()
-                        n = chan.send('\n#%d\n' % len(data) + data + MSG_DELIM_1_1)
-                        if n <= 0:
-                            raise SessionCloseError(self._buffer.getvalue(), data)
+                        message = '\n#%d\n' % len(data) + data + MSG_DELIM_1_1
+                        while message:
+                            n = chan.send(message)
+                            if n <= 0:
+                                raise SessionCloseError(self._buffer.getvalue(), message)
+                            message = message[n:]
                     else: # framing 1.0
-                        data = q.get() + MSG_DELIM + '\n' # added '\n' for TTY mode
+                        logger.debug("Using Netconf 1.0 framing")
+                        # TBF need to another a return line, only in TTY mode
+                        data = q.get() + MSG_DELIM
                         while data:
                             n = chan.send(data)
                             if n <= 0:
